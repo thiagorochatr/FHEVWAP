@@ -6,6 +6,26 @@
 export const FHEVWAPAuctionABI = {
   "abi": [
     {
+      "inputs": [],
+      "name": "HandlesAlreadySavedForRequestID",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidKMSSignatures",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NoHandleFoundForRequestID",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "UnsupportedHandleType",
+      "type": "error"
+    },
+    {
       "anonymous": false,
       "inputs": [
         {
@@ -141,6 +161,19 @@ export const FHEVWAPAuctionABI = {
         {
           "indexed": true,
           "internalType": "uint256",
+          "name": "requestID",
+          "type": "uint256"
+        }
+      ],
+      "name": "DecryptionFulfilled",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
           "name": "auctionId",
           "type": "uint256"
         }
@@ -199,6 +232,44 @@ export const FHEVWAPAuctionABI = {
       "type": "event"
     },
     {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "auctionId",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "vwap",
+          "type": "uint256"
+        }
+      ],
+      "name": "VWAPDecrypted",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "auctionId",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "requestId",
+          "type": "uint256"
+        }
+      ],
+      "name": "VWAPDecryptionRequested",
+      "type": "event"
+    },
+    {
       "inputs": [
         {
           "internalType": "uint256",
@@ -227,6 +298,16 @@ export const FHEVWAPAuctionABI = {
           "internalType": "uint64",
           "name": "end",
           "type": "uint64"
+        },
+        {
+          "internalType": "uint256",
+          "name": "vwap",
+          "type": "uint256"
+        },
+        {
+          "internalType": "bool",
+          "name": "vwapSet",
+          "type": "bool"
         },
         {
           "internalType": "bool",
@@ -403,10 +484,47 @@ export const FHEVWAPAuctionABI = {
           "internalType": "uint256",
           "name": "auctionId",
           "type": "uint256"
-        },
+        }
+      ],
+      "name": "requestVWAPDecryption",
+      "outputs": [
         {
           "internalType": "uint256",
-          "name": "vwap",
+          "name": "requestId",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "payable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "requestId",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint64",
+          "name": "clearVWAP",
+          "type": "uint64"
+        },
+        {
+          "internalType": "bytes[]",
+          "name": "signatures",
+          "type": "bytes[]"
+        }
+      ],
+      "name": "resolveVWAPCallback",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "auctionId",
           "type": "uint256"
         }
       ],

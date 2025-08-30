@@ -1,13 +1,9 @@
 "use client";
 
 import { useFhevm } from "../fhevm/useFhevm";
-import { FhevmDecryptionSignature } from "@/fhevm/FhevmDecryptionSignature";
-import { useInMemoryStorage } from "@/hooks/useInMemoryStorage";
 import { useMetaMaskEthersSigner } from "../hooks/metamask/useMetaMaskEthersSigner";
 import { ethers } from "ethers";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { FhevmInstance } from "@/fhevm/fhevmTypes";
-import type { GenericStringStorage } from "@/fhevm/GenericStringStorage";
 
 import { FHEVWAPAuctionABI } from "@/abi/FHEVWAPAuctionABI";
 import { FHEVWAPAuctionAddresses } from "@/abi/FHEVWAPAuctionAddresses";
@@ -31,12 +27,15 @@ type AuctionView = {
 export const AuctionApp = () => {
   const { provider, chainId, isConnected, connect, ethersSigner, ethersReadonlyProvider } = useMetaMaskEthersSigner();
   const { instance } = useFhevm({ provider, chainId, enabled: true });
-  const { storage: fhevmDecryptionSignatureStorage } = useInMemoryStorage();
 
   const [message, setMessage] = useState<string>("");
   const [auctions, setAuctions] = useState<AuctionView[]>([]);
-  const [decryptedVwaps, setDecryptedVwaps] = useState<Record<number, bigint>>({});
+  // on-chain vwap is fetched in refreshAuctions via a.vwap / a.vwapSet
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [logs, setLogs] = useState<string[]>([]);
+  const addLog = useCallback((m: string) => {
+    setLogs((prev) => [...prev, `${new Date().toISOString()} — ${m}`]);
+  }, []);
 
   const auctionAddress = useMemo(() => {
     if (!chainId) return undefined;
@@ -98,16 +97,34 @@ export const AuctionApp = () => {
         });
       }
       setAuctions(list);
+      addLog(`Refreshed auctions (count=${list.length}).`);
     } catch (e) {
       setMessage("Failed to load auctions: " + (e as Error).message);
+      addLog(`Failed to load auctions: ${(e as Error).message}`);
     } finally {
       setIsLoading(false);
     }
-  }, [auctionReadonly]);
+  }, [auctionReadonly, addLog]);
 
   useEffect(() => {
     refreshAuctions();
   }, [refreshAuctions]);
+
+  // Listen for on-chain VWAP decryption completion and refresh UI immediately
+  useEffect(() => {
+    if (!auctionSigner) return;
+    const handler = (auctionId: bigint, vwap: bigint) => {
+      setMessage(`VWAP decrypted on-chain for #${Number(auctionId)}: ${String(vwap)}`);
+      addLog(`Oracle callback: VWAPDecrypted(auctionId=${Number(auctionId)}, vwap=${String(vwap)})`);
+      refreshAuctions();
+    };
+    auctionSigner.on("VWAPDecrypted", handler);
+    return () => {
+      try {
+        auctionSigner.off("VWAPDecrypted", handler);
+      } catch {}
+    };
+  }, [auctionSigner, refreshAuctions, addLog]);
 
   const [formS, setFormS] = useState<string>("100");
   const [formStartMins, setFormStartMins] = useState<string>("0");
@@ -122,13 +139,18 @@ export const AuctionApp = () => {
       const now = Math.floor(Date.now() / 1000);
       const start = now + Number(formStartMins || 0) * 60;
       const end = now + Number(formEndMins || 0) * 60;
+      addLog(`Approving BaseToken allowance to auction...`);
       await (await baseToken.approve(auctionSigner.target, S)).wait();
+      addLog(`BaseToken approved.`);
       const tx = await auctionSigner.createAuction(baseAddress, quoteAddress, S, start, end);
+      addLog(`createAuction sent: tx=${tx.hash}`);
       await tx.wait();
+      addLog(`createAuction confirmed.`);
       setMessage("Auction created!");
       await refreshAuctions();
     } catch (e) {
       setMessage("Create failed: " + (e as Error).message);
+      addLog(`Create failed: ${(e as Error).message}`);
     } finally {
       setActionBusy(false);
     }
@@ -149,46 +171,52 @@ export const AuctionApp = () => {
       const qty = Number(bidQty || "0");
       const cap = Number(bidCap || "0");
       const maxSpend = BigInt(cap * qty);
+      addLog(`Approving QuoteToken allowance (maxSpend=${maxSpend})...`);
       await (await quoteToken.approve(auctionSigner.target, maxSpend)).wait();
+      addLog(`QuoteToken approved.`);
+      addLog(`Encrypting price with FHE (WASM)...`);
       const input = instance.createEncryptedInput(auctionSigner.target as `0x${string}`, ethersSigner.address);
       input.add64(price);
       const enc = await input.encrypt();
+      addLog(`Encryption done. handle=${String(enc.handles[0])}, proofBytes=${enc.inputProof?.length ?? 0}`);
       const tx = await auctionSigner.submitBid(auctionId, enc.handles[0], enc.inputProof, qty, cap, maxSpend);
+      addLog(`submitBid sent: tx=${tx.hash}`);
       await tx.wait();
+      addLog(`submitBid confirmed.`);
       setMessage("Bid submitted!");
       await refreshAuctions();
     } catch (e) {
       setMessage("Bid failed: " + (e as Error).message);
+      addLog(`Bid failed: ${(e as Error).message}`);
     } finally {
       setBidBusy(false);
     }
   }, [auctionSigner, instance, quoteToken, ethersSigner, bidAuctionId, bidPrice, bidQty, bidCap, refreshAuctions]);
 
-  // read-only VWAP rendered from decryptedVwaps
-
   const [settleId, setSettleId] = useState<string>("1");
   const [settleBusy, setSettleBusy] = useState<boolean>(false);
+  const currentAuction = useMemo(() => {
+    const idNum = Number(settleId || "1");
+    return auctions.find((a) => a.id === idNum);
+  }, [auctions, settleId]);
   const onSettle = useCallback(async () => {
     if (!auctionSigner) return;
     try {
       setSettleBusy(true);
       const id = Number(settleId || "1");
-      const vwapBig = decryptedVwaps[id];
-      if (vwapBig === undefined) {
-        setMessage("Decrypt VWAP first for this auction.");
-        return;
-      }
-      const vwap = Number(vwapBig);
-      const tx = await auctionSigner.settle(id, vwap);
+      const tx = await auctionSigner.settle(id);
+      addLog(`settle sent: tx=${tx.hash}`);
       await tx.wait();
+      addLog(`settle confirmed.`);
       setMessage("Settled!");
       await refreshAuctions();
     } catch (e) {
       setMessage("Settle failed: " + (e as Error).message);
+      addLog(`Settle failed: ${(e as Error).message}`);
     } finally {
       setSettleBusy(false);
     }
-  }, [auctionSigner, settleId, decryptedVwaps, refreshAuctions]);
+  }, [auctionSigner, settleId, refreshAuctions]);
 
   const [balances, setBalances] = useState<{ base?: bigint; quote?: bigint }>({});
   const refreshBalances = useCallback(async () => {
@@ -295,8 +323,8 @@ export const AuctionApp = () => {
           <p className={titleClass}>Settle</p>
           <label htmlFor="settleId" className={labelClass}>Auction ID</label>
           <input id="settleId" className={inputClass} value={settleId} onChange={(e) => setSettleId(e.target.value)} />
-          <label htmlFor="vwap" className={`${labelClass} mt-2`}>VWAP (decrypted)</label>
-          <input id="vwap" className={inputClass} value={decryptedVwaps[Number(settleId || "1")] !== undefined ? String(decryptedVwaps[Number(settleId || "1")]) : "-"} readOnly />
+          <label htmlFor="vwapOnChain" className={`${labelClass} mt-2`}>VWAP (on-chain)</label>
+          <input id="vwapOnChain" className={inputClass} value={currentAuction?.vwapSet ? String(currentAuction.vwap) : "-"} readOnly />
           <button type="button" className={`${buttonClass} mt-3`} disabled={settleBusy} onClick={onSettle}>
             {settleBusy ? "Settling..." : "Settle"}
           </button>
@@ -311,32 +339,16 @@ export const AuctionApp = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mx-20">
+      <div className="grid grid-cols-2 gap-4 mx-20">
         <div className={panelClass}>
-          <p className={titleClass}>Compute Enc VWAP</p>
-          <ComputeEncVWAP
+          <p className={titleClass}>Request On-Chain VWAP Decryption</p>
+          <RequestDecVWAP
             buttonClass={buttonClass}
             inputClass={inputClass}
             labelClass={labelClass}
-            titleClass={titleClass}
             auctionSigner={auctionSigner}
-          />
-        </div>
-        <div className={panelClass}>
-          <p className={titleClass}>Decrypt Enc VWAP</p>
-          <DecryptEncVWAP
-            buttonClass={buttonClass}
-            inputClass={inputClass}
-            labelClass={labelClass}
-            auctionReadonly={auctionReadonly}
-            auctionAddress={auctionAddress}
-            instance={instance}
-            ethersSigner={ethersSigner}
-            fhevmDecryptionSignatureStorage={fhevmDecryptionSignatureStorage}
-            onDecrypted={(id, v) => {
-              setDecryptedVwaps((prev) => ({ ...prev, [id]: v }));
-            }}
             setMessage={setMessage}
+            addLog={addLog}
           />
         </div>
       </div>
@@ -353,7 +365,7 @@ export const AuctionApp = () => {
                   <div><span className="font-semibold">Seller</span>: {a.seller}</div>
                   <div><span className="font-semibold">S</span>: {String(a.S)}</div>
                   <div><span className="font-semibold">sumQ</span>: {String(a.sumQ)}</div>
-                  <div><span className="font-semibold">VWAP</span>: {decryptedVwaps[a.id] !== undefined ? String(decryptedVwaps[a.id]) : "-"}</div>
+                  <div><span className="font-semibold">VWAP</span>: {a.vwapSet ? String(a.vwap) : "-"}</div>
                   <div><span className="font-semibold">Settled</span>: {a.settled ? "yes" : "no"}</div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 mt-1">
@@ -365,103 +377,58 @@ export const AuctionApp = () => {
           </div>
         </div>
       </div>
+      <div className="col-span-full mx-20">
+        <div className={panelClass}>
+          <p className={titleClass}>Activity Log</p>
+          <div className="grid grid-cols-1 gap-1 max-h-72 overflow-auto">
+            {logs.length === 0 && <p className="text-black">No activity yet.</p>}
+            {logs.map((l, i) => (
+              <p key={i} className="text-black font-mono text-xs">{l}</p>
+            ))}
+          </div>
+          <button type="button" className={`${buttonClass} mt-3`} onClick={() => setLogs([])}>Clear Log</button>
+        </div>
+      </div>
     </div>
   );
 };
 
-function ComputeEncVWAP(props: {
+function RequestDecVWAP(props: {
   buttonClass: string;
   inputClass: string;
   labelClass: string;
-  titleClass: string;
   auctionSigner: ethers.Contract | undefined;
+  setMessage: (m: string) => void;
+  addLog: (m: string) => void;
 }) {
-  const { buttonClass, inputClass, labelClass, auctionSigner } = props;
+  const { buttonClass, inputClass, labelClass, auctionSigner, setMessage, addLog } = props;
   const [id, setId] = useState<string>("1");
   const [busy, setBusy] = useState(false);
-  const onCompute = async () => {
+  const onRequest = async () => {
     if (!auctionSigner) return;
     try {
       setBusy(true);
-      const tx = await auctionSigner.computeEncryptedVWAP(Number(id || "1"));
-      await tx.wait();
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div>
-      <label htmlFor="cId" className={labelClass}>Auction ID</label>
-      <input id="cId" className={inputClass} value={id} onChange={(e) => setId(e.target.value)} />
-      <button type="button" className={`${buttonClass} mt-3`} disabled={busy} onClick={onCompute}>
-        {busy ? "Computing..." : "Compute"}
-      </button>
-    </div>
-  );
-}
-
-function DecryptEncVWAP(props: {
-  buttonClass: string;
-  inputClass: string;
-  labelClass: string;
-  auctionReadonly: ethers.Contract | undefined;
-  auctionAddress: `0x${string}` | undefined;
-  instance: FhevmInstance | undefined;
-  ethersSigner: ethers.JsonRpcSigner | undefined;
-  fhevmDecryptionSignatureStorage: GenericStringStorage;
-  onDecrypted: (id: number, value: bigint) => void;
-  setMessage: (m: string) => void;
-}) {
-  const { buttonClass, inputClass, labelClass, auctionReadonly, auctionAddress, instance, ethersSigner, fhevmDecryptionSignatureStorage, onDecrypted, setMessage } = props;
-  const [id, setId] = useState<string>("1");
-  const [busy, setBusy] = useState(false);
-
-  const onDecrypt = async () => {
-    if (!auctionReadonly || !auctionAddress || !instance || !ethersSigner) return;
-    try {
-      setBusy(true);
       const auctionId = Number(id || "1");
-      const handle = await auctionReadonly.getEncryptedVWAP(auctionId);
-      if (!handle || handle === ethers.ZeroHash) {
-        setMessage("Encrypted VWAP not computed yet.");
-        return;
-      }
-
-      const sig = await FhevmDecryptionSignature.loadOrSign(
-        instance,
-        [auctionAddress],
-        ethersSigner,
-        fhevmDecryptionSignatureStorage
-      );
-      if (!sig) {
-        setMessage("Unable to build FHEVM decryption signature");
-        return;
-      }
-
-      const res = await instance.userDecrypt(
-        [{ handle, contractAddress: auctionAddress }],
-        sig.privateKey,
-        sig.publicKey,
-        sig.signature,
-        sig.contractAddresses,
-        sig.userAddress,
-        sig.startTimestamp,
-        sig.durationDays
-      );
-      const value = res[handle as string] as bigint;
-      onDecrypted(auctionId, value);
-      setMessage("Decrypted VWAP: " + String(value));
+      // First compute encrypted VWAP, then request decryption
+      const tx1 = await auctionSigner.computeEncryptedVWAP(auctionId);
+      addLog(`computeEncryptedVWAP sent: tx=${tx1.hash}`);
+      await tx1.wait();
+      addLog(`computeEncryptedVWAP confirmed.`);
+      const tx2 = await auctionSigner.requestVWAPDecryption(auctionId);
+      addLog(`requestVWAPDecryption sent: tx=${tx2.hash}`);
+      await tx2.wait();
+      addLog(`requestVWAPDecryption confirmed.`);
+      setMessage("VWAP decryption requested on-chain.");
     } finally {
       setBusy(false);
     }
   };
-
   return (
     <div>
-      <label htmlFor="dId" className={labelClass}>Auction ID</label>
-      <input id="dId" className={inputClass} value={id} onChange={(e) => setId(e.target.value)} />
-      <button type="button" className={`${buttonClass} mt-3`} disabled={busy} onClick={onDecrypt}>
-        {busy ? "Decrypting..." : "Decrypt"}
+      <label htmlFor="rId" className={labelClass}>Auction ID</label>
+      <input id="rId" className={inputClass} value={id} onChange={(e) => setId(e.target.value)} />
+      <button type="button" className={`${buttonClass} mt-3`} disabled={busy} onClick={onRequest}>
+        {busy ? "Requesting..." : "Request"}
       </button>
     </div>
   );

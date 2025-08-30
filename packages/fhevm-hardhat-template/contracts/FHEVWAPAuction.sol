@@ -13,6 +13,8 @@ contract FHEVWAPAuction is SepoliaConfig {
         uint256 S; // total baseToken supplied by seller
         uint64 start;
         uint64 end;
+        uint256 vwap; // public VWAP once decrypted on-chain
+        bool vwapSet;
         bool settled;
         uint256 sumQ; // clear sum of quantities
         euint64 encSumPQ; // encrypted sum of price*qty (approx on uint64 domain)
@@ -34,6 +36,8 @@ contract FHEVWAPAuction is SepoliaConfig {
     event AuctionCreated(uint256 indexed auctionId, address indexed seller, uint256 S, uint64 start, uint64 end);
     event BidSubmitted(uint256 indexed auctionId, address indexed buyer, uint256 qty, uint256 priceCap, uint256 maxSpend);
     event EncryptedVWAPComputed(uint256 indexed auctionId);
+    event VWAPDecryptionRequested(uint256 indexed auctionId, uint256 requestId);
+    event VWAPDecrypted(uint256 indexed auctionId, uint256 vwap);
     event Allocated(uint256 indexed auctionId, address indexed buyer, uint256 alloc, uint256 spend);
     event Refunded(uint256 indexed auctionId, address indexed buyer, uint256 amount);
     event SellerPaid(uint256 indexed auctionId, address indexed seller, uint256 amount);
@@ -42,6 +46,7 @@ contract FHEVWAPAuction is SepoliaConfig {
     uint256 public auctionsCount;
     mapping(uint256 => Auction) public auctions;
     mapping(uint256 => Bid[]) internal _bidsByAuction;
+    mapping(uint256 => uint256) internal _decryptReqToAuction; // requestId => auctionId
 
     /// @notice Create a new VWAP auction, deposits seller baseToken into escrow
     function createAuction(
@@ -65,6 +70,8 @@ contract FHEVWAPAuction is SepoliaConfig {
         a.S = S;
         a.start = start;
         a.end = end;
+        a.vwap = 0;
+        a.vwapSet = false;
         a.settled = false;
         a.sumQ = 0;
         a.encSumPQ = FHE.asEuint64(0);
@@ -140,10 +147,42 @@ contract FHEVWAPAuction is SepoliaConfig {
         return a.encVWAP;
     }
 
-    /// @notice Settle allocations and payments. Performs pro-rata if needed. Caller provides clear VWAP.
-    function settle(uint256 auctionId, uint256 vwap) external {
+    /// @notice Request on-chain decryption of the encrypted VWAP via FHE oracle.
+    /// The caller may need to attach a fee depending on the deployed oracle configuration.
+    function requestVWAPDecryption(uint256 auctionId) external payable returns (uint256 requestId) {
         Auction storage a = auctions[auctionId];
         require(a.seller != address(0), "no auction");
+        require(block.timestamp > a.end, "too early");
+        require(a.sumQ > 0, "no demand");
+        require(a.encVWAPComputed, "not computed");
+        require(!a.vwapSet, "already set");
+
+        bytes32[] memory cts = new bytes32[](1);
+        cts[0] = FHE.toBytes32(a.encVWAP);
+        requestId = FHE.requestDecryption(cts, this.resolveVWAPCallback.selector);
+        _decryptReqToAuction[requestId] = auctionId;
+        emit VWAPDecryptionRequested(auctionId, requestId);
+    }
+
+    /// @notice Oracle callback invoked with clear VWAP. Validates signatures and persists VWAP on-chain.
+    function resolveVWAPCallback(uint256 requestId, uint64 clearVWAP, bytes[] memory signatures) public {
+        uint256 auctionId = _decryptReqToAuction[requestId];
+        require(auctionId != 0, "unknown requestId");
+        FHE.checkSignatures(requestId, signatures);
+
+        Auction storage a = auctions[auctionId];
+        a.vwap = uint256(clearVWAP);
+        a.vwapSet = true;
+        emit VWAPDecrypted(auctionId, a.vwap);
+
+        delete _decryptReqToAuction[requestId];
+    }
+
+    /// @notice Settle allocations and payments. Performs pro-rata if needed. Requires on-chain decrypted VWAP.
+    function settle(uint256 auctionId) external {
+        Auction storage a = auctions[auctionId];
+        require(a.seller != address(0), "no auction");
+        require(a.vwapSet, "no vwap");
         require(!a.settled, "settled");
 
         Bid[] storage bids = _bidsByAuction[auctionId];
@@ -152,7 +191,7 @@ contract FHEVWAPAuction is SepoliaConfig {
         uint256 Q = 0;
         for (uint256 i = 0; i < bids.length; i++) {
             if (bids[i].settled) continue;
-            if (bids[i].priceCap >= vwap) {
+            if (bids[i].priceCap >= a.vwap) {
                 Q += bids[i].qty;
             }
         }
@@ -183,7 +222,7 @@ contract FHEVWAPAuction is SepoliaConfig {
         uint256 remainingBase = S;
         for (uint256 j = 0; j < bids.length; j++) {
             if (bids[j].settled) continue;
-            if (bids[j].priceCap < vwap) {
+            if (bids[j].priceCap < a.vwap) {
                 // ineligible: full refund
                 bids[j].settled = true;
                 if (bids[j].maxSpend > 0) {
@@ -205,7 +244,7 @@ contract FHEVWAPAuction is SepoliaConfig {
                 alloc = remainingBase;
             }
 
-            uint256 spend = alloc * vwap;
+            uint256 spend = alloc * a.vwap;
             require(spend <= bids[j].maxSpend, "insufficient escrow");
 
             // Transfers

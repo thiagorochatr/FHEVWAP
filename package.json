@@ -9,7 +9,5 @@
   "workspaces": [
     "packages/*"
   ],
-  "scripts": {
-    "postinstall": "cd ./packages/site/ && npm run genabi"
-  }
+  "scripts": {}
 }

@@ -9,14 +9,14 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const base = await deploy("BaseToken", {
     from: deployer,
     contract: "MockERC20",
-    args: ["BaseToken", "BASE", hre.ethers.parseUnits("1000000", 0)],
+    args: ["BaseToken", "BASE", hre.ethers.parseUnits("100000000000", 2)],
     log: true,
   });
 
   const quote = await deploy("QuoteToken", {
     from: deployer,
     contract: "MockERC20",
-    args: ["QuoteToken", "QUOTE", hre.ethers.parseUnits("1000000", 0)],
+    args: ["QuoteToken", "QUOTE", hre.ethers.parseUnits("100000000000", 2)],
     log: true,
   });
 

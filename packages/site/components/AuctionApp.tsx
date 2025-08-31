@@ -76,6 +76,12 @@ export const AuctionApp = () => {
     return new ethers.Contract(quoteAddress, QuoteTokenABI.abi, ethersSigner);
   }, [quoteAddress, ethersSigner]);
 
+  const connectedAddressShort = useMemo(() => {
+    const addr = ethersSigner?.address as string | undefined;
+    if (!addr) return undefined;
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+  }, [ethersSigner]);
+
   const refreshAuctions = useCallback(async () => {
     if (!auctionReadonly) return;
     try {
@@ -273,12 +279,13 @@ export const AuctionApp = () => {
       <div className="grid grid-cols-3 gap-4 mx-20">
         <div className={panelClass}>
           <p className={titleClass}>Balances</p>
-          <p className="text-black">Base ({baseAddress}): <span className="font-mono">{String(balances.base ?? 0n)}</span></p>
-          <p className="text-black">Quote ({quoteAddress}): <span className="font-mono">{String(balances.quote ?? 0n)}</span></p>
+          <p className="text-black">Wallet: <span className="font-mono">{connectedAddressShort ?? "-"}</span></p>
+          <p className="text-black">Base: <span className="font-mono">{String(balances.base ?? 0n)}</span></p>
+          <p className="text-black">Quote: <span className="font-mono">{String(balances.quote ?? 0n)}</span></p>
         </div>
         <div className={panelClass}>
           <p className={titleClass}>Create Auction</p>
-          <label htmlFor="s" className={labelClass}>S (base amount)</label>
+          <label htmlFor="s" className={labelClass}>Base amount</label>
           <input id="s" className={inputClass} value={formS} onChange={(e) => setFormS(e.target.value)} />
           <div className="grid grid-cols-2 gap-2 mt-2">
             <div>
@@ -300,7 +307,7 @@ export const AuctionApp = () => {
           <input id="bidId" className={inputClass} value={bidAuctionId} onChange={(e) => setBidAuctionId(e.target.value)} />
           <div className="grid grid-cols-3 gap-2 mt-2">
             <div>
-              <label htmlFor="price" className={labelClass}>Price (encrypted)</label>
+              <label htmlFor="price" className={labelClass}>Price (enc)</label>
               <input id="price" className={inputClass} value={bidPrice} onChange={(e) => setBidPrice(e.target.value)} />
             </div>
             <div>
@@ -329,7 +336,7 @@ export const AuctionApp = () => {
             {settleBusy ? "Settling..." : "Settle"}
           </button>
         </div>
-        <div className={panelClass}>
+        <div className={`${panelClass} col-span-2`}>
           <p className={titleClass}>Status</p>
           <p className="text-black">ChainId: <span className="font-mono">{String(chainId)}</span></p>
           <p className="text-black">Auction: <span className="font-mono">{auctionAddress}</span></p>
@@ -347,6 +354,7 @@ export const AuctionApp = () => {
             inputClass={inputClass}
             labelClass={labelClass}
             auctionSigner={auctionSigner}
+            auctionReadonly={auctionReadonly}
             setMessage={setMessage}
             addLog={addLog}
           />
@@ -398,10 +406,11 @@ function RequestDecVWAP(props: {
   inputClass: string;
   labelClass: string;
   auctionSigner: ethers.Contract | undefined;
+  auctionReadonly: ethers.Contract | undefined;
   setMessage: (m: string) => void;
   addLog: (m: string) => void;
 }) {
-  const { buttonClass, inputClass, labelClass, auctionSigner, setMessage, addLog } = props;
+  const { buttonClass, inputClass, labelClass, auctionSigner, auctionReadonly, setMessage, addLog } = props;
   const [id, setId] = useState<string>("1");
   const [busy, setBusy] = useState(false);
   const onRequest = async () => {
@@ -409,16 +418,41 @@ function RequestDecVWAP(props: {
     try {
       setBusy(true);
       const auctionId = Number(id || "1");
-      // First compute encrypted VWAP, then request decryption
-      const tx1 = await auctionSigner.computeEncryptedVWAP(auctionId);
-      addLog(`computeEncryptedVWAP sent: tx=${tx1.hash}`);
-      await tx1.wait();
-      addLog(`computeEncryptedVWAP confirmed.`);
+      // If already computed by someone else, skip compute step to avoid 'already computed'
+      let alreadyComputed = false;
+      if (auctionReadonly) {
+        try {
+          const handle = await auctionReadonly.getEncryptedVWAP(auctionId);
+          if (handle && handle !== ethers.ZeroHash) {
+            alreadyComputed = true;
+            addLog(`encVWAP already computed (handle exists).`);
+          }
+        } catch {
+          // not computed yet -> proceed to compute
+        }
+      }
+      if (!alreadyComputed) {
+        const tx1 = await auctionSigner.computeEncryptedVWAP(auctionId);
+        addLog(`computeEncryptedVWAP sent: tx=${tx1.hash}`);
+        await tx1.wait();
+        addLog(`computeEncryptedVWAP confirmed.`);
+      }
       const tx2 = await auctionSigner.requestVWAPDecryption(auctionId);
       addLog(`requestVWAPDecryption sent: tx=${tx2.hash}`);
       await tx2.wait();
       addLog(`requestVWAPDecryption confirmed.`);
       setMessage("VWAP decryption requested on-chain.");
+      // Optional immediate poll (in case event misses): try to fetch updated vwap after short delay
+      if (auctionReadonly) {
+        setTimeout(async () => {
+          try {
+            const a = await auctionReadonly.auctions(auctionId);
+            if (a.vwapSet) {
+              addLog(`Polled VWAP updated on-chain: ${String(a.vwap)}`);
+            }
+          } catch {}
+        }, 1500);
+      }
     } finally {
       setBusy(false);
     }

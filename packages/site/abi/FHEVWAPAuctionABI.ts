@@ -22,6 +22,22 @@ export const FHEVWAPAuctionABI = {
     },
     {
       "inputs": [],
+      "name": "ReentrancyGuardReentrantCall",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "token",
+          "type": "address"
+        }
+      ],
+      "name": "SafeERC20FailedOperation",
+      "type": "error"
+    },
+    {
+      "inputs": [],
       "name": "UnsupportedHandleType",
       "type": "error"
     },

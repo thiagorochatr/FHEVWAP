@@ -14,6 +14,11 @@ contract MockERC20 is ERC20 {
     function mint(address to, uint256 amount) external {
         _mint(to, amount);
     }
+
+    function decimals() public view override returns (uint8) {
+        // Use 0 decimals so on-chain integers map 1:1 to token units (demo-friendly)
+        return 0;
+    }
 }
 
 

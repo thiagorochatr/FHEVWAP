@@ -2,18 +2,21 @@
 pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {FHE, euint64, externalEuint64} from "@fhevm/solidity/lib/FHE.sol";
 import {SepoliaConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
 
 /// @title VWAP Batch Auction with Escrow and Zama FHE
 /// @notice Implements encrypted per-bid prices and homomorphic aggregation of price*qty. VWAP is revealed post-window.
-contract FHEVWAPAuction is SepoliaConfig {
+contract FHEVWAPAuction is SepoliaConfig, ReentrancyGuard {
+    using SafeERC20 for IERC20;
     struct Auction {
         address seller;
         uint256 S; // total baseToken supplied by seller
         uint64 start;
         uint64 end;
-        uint256 vwap; // public VWAP once decrypted on-chain
+        uint256 vwap; // public VWAP (integer)
         bool vwapSet;
         bool settled;
         uint256 sumQ; // clear sum of quantities
@@ -55,14 +58,15 @@ contract FHEVWAPAuction is SepoliaConfig {
         uint256 S,
         uint64 start,
         uint64 end
-    ) external returns (uint256 auctionId) {
+    ) external nonReentrant returns (uint256 auctionId) {
         require(start < end, "invalid window");
         require(S > 0, "zero S");
+        require(address(baseToken) != address(quoteToken), "same token");
 
         auctionId = ++auctionsCount;
 
         // Pull base from seller to escrow
-        require(baseToken.transferFrom(msg.sender, address(this), S), "base transferFrom failed");
+        baseToken.safeTransferFrom(msg.sender, address(this), S);
 
         // Initialize encSumPQ to zero handle (implicit)
         Auction storage a = auctions[auctionId];
@@ -94,7 +98,7 @@ contract FHEVWAPAuction is SepoliaConfig {
         uint256 qty,
         uint256 priceCap,
         uint256 maxSpend
-    ) external {
+    ) external nonReentrant {
         Auction storage a = auctions[auctionId];
         require(a.seller != address(0), "no auction");
         require(block.timestamp >= a.start && block.timestamp <= a.end, "not in window");
@@ -102,7 +106,7 @@ contract FHEVWAPAuction is SepoliaConfig {
         require(maxSpend > 0, "maxSpend=0");
 
         // Pull quoteToken funds into escrow up to maxSpend
-        require(a.quoteToken.transferFrom(msg.sender, address(this), maxSpend), "quote transferFrom failed");
+        a.quoteToken.safeTransferFrom(msg.sender, address(this), maxSpend);
 
         // Convert external encrypted price and accumulate encSumPQ += encPrice * qty
         euint64 price = FHE.fromExternal(encPrice, inputProof);
@@ -156,6 +160,7 @@ contract FHEVWAPAuction is SepoliaConfig {
         require(a.sumQ > 0, "no demand");
         require(a.encVWAPComputed, "not computed");
         require(!a.vwapSet, "already set");
+        require(msg.sender == a.seller, "only seller");
 
         bytes32[] memory cts = new bytes32[](1);
         cts[0] = FHE.toBytes32(a.encVWAP);
@@ -179,11 +184,12 @@ contract FHEVWAPAuction is SepoliaConfig {
     }
 
     /// @notice Settle allocations and payments. Performs pro-rata if needed. Requires on-chain decrypted VWAP.
-    function settle(uint256 auctionId) external {
+    function settle(uint256 auctionId) external nonReentrant {
         Auction storage a = auctions[auctionId];
         require(a.seller != address(0), "no auction");
         require(a.vwapSet, "no vwap");
         require(!a.settled, "settled");
+        require(msg.sender == a.seller, "only seller");
 
         Bid[] storage bids = _bidsByAuction[auctionId];
 
@@ -206,7 +212,7 @@ contract FHEVWAPAuction is SepoliaConfig {
                 bids[i2].settled = true;
                 // refund full maxSpend
                 if (bids[i2].maxSpend > 0) {
-                    require(a.quoteToken.transfer(bids[i2].buyer, bids[i2].maxSpend), "refund failed");
+                    a.quoteToken.safeTransfer(bids[i2].buyer, bids[i2].maxSpend);
                     emit Refunded(auctionId, bids[i2].buyer, bids[i2].maxSpend);
                 }
             }
@@ -226,7 +232,7 @@ contract FHEVWAPAuction is SepoliaConfig {
                 // ineligible: full refund
                 bids[j].settled = true;
                 if (bids[j].maxSpend > 0) {
-                    require(a.quoteToken.transfer(bids[j].buyer, bids[j].maxSpend), "refund failed");
+                    a.quoteToken.safeTransfer(bids[j].buyer, bids[j].maxSpend);
                     emit Refunded(auctionId, bids[j].buyer, bids[j].maxSpend);
                 }
                 continue;
@@ -249,20 +255,20 @@ contract FHEVWAPAuction is SepoliaConfig {
 
             // Transfers
             if (alloc > 0) {
-                require(a.baseToken.transfer(bids[j].buyer, alloc), "base transfer failed");
+                a.baseToken.safeTransfer(bids[j].buyer, alloc);
                 remainingBase -= alloc;
             }
 
             if (spend > 0) {
                 // move spend to seller
-                require(a.quoteToken.transfer(a.seller, spend), "pay seller failed");
+                a.quoteToken.safeTransfer(a.seller, spend);
                 sellerProceeds += spend;
             }
 
             // refund remaining of maxSpend
             uint256 refund = bids[j].maxSpend - spend;
             if (refund > 0) {
-                require(a.quoteToken.transfer(bids[j].buyer, refund), "refund failed");
+                a.quoteToken.safeTransfer(bids[j].buyer, refund);
                 emit Refunded(auctionId, bids[j].buyer, refund);
             }
 
@@ -272,7 +278,7 @@ contract FHEVWAPAuction is SepoliaConfig {
 
         // Return any unallocated base to seller
         if (remainingBase > 0) {
-            require(a.baseToken.transfer(a.seller, remainingBase), "base back failed");
+            a.baseToken.safeTransfer(a.seller, remainingBase);
             emit BaseRemainderReturned(auctionId, a.seller, remainingBase);
         }
 

@@ -25,7 +25,7 @@ type AuctionView = {
 };
 
 export const MedicineApp = () => {
-  const { provider, chainId, ethersSigner, ethersReadonlyProvider } = useMetaMaskEthersSigner();
+  const { provider, chainId, isConnected, connect, ethersSigner, ethersReadonlyProvider } = useMetaMaskEthersSigner();
   const { instance } = useFhevm({ provider, chainId, enabled: true });
 
   const [, setMessage] = useState<string>("");
@@ -370,6 +370,22 @@ export const MedicineApp = () => {
   const title = "font-bold text-amber-900 text-lg mb-2";
   const label = "text-sm text-amber-900";
   const input = "w-full rounded-md border px-3 py-2 text-black shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-500";
+
+  if (!isConnected) {
+    return (
+      <div className="min-h-screen w-full bg-gradient-to-b from-amber-50 to-yellow-50">
+        <div className="mx-auto mt-28 flex items-center justify-center">
+          <button
+            type="button"
+            className="inline-flex items-center justify-center rounded-xl bg-amber-600 px-6 py-4 text-lg font-semibold text-white shadow-sm transition-colors duration-200 hover:bg-amber-700 active:bg-amber-800"
+            onClick={connect}
+          >
+            Connect Wallet
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen w-full bg-gradient-to-b from-amber-50 to-yellow-50">

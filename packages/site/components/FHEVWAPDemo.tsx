@@ -1,7 +1,6 @@
 "use client";
 
 import { useFhevm } from "../fhevm/useFhevm";
-import { useInMemoryStorage } from "../hooks/useInMemoryStorage";
 import { useMetaMaskEthersSigner } from "../hooks/metamask/useMetaMaskEthersSigner";
 import { ethers } from "ethers";
 import { FHEVWAPAuctionABI } from "@/abi/FHEVWAPAuctionABI";
@@ -12,7 +11,6 @@ import { QuoteTokenABI } from "@/abi/QuoteTokenABI";
 import { QuoteTokenAddresses } from "@/abi/QuoteTokenAddresses";
 
 export const FHEVWAPDemo = () => {
-  const { storage: _sigStore } = useInMemoryStorage();
   const { provider, chainId, isConnected, connect, ethersSigner } = useMetaMaskEthersSigner();
 
   const { instance } = useFhevm({ provider, chainId, enabled: true });

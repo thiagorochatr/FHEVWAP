@@ -160,7 +160,7 @@ export const AuctionApp = () => {
     } finally {
       setActionBusy(false);
     }
-  }, [auctionSigner, baseToken, baseAddress, quoteAddress, formS, formStartMins, formEndMins, refreshAuctions]);
+  }, [auctionSigner, baseToken, baseAddress, quoteAddress, formS, formStartMins, formEndMins, refreshAuctions, addLog]);
 
   const [bidAuctionId, setBidAuctionId] = useState<string>("1");
   const [bidPrice, setBidPrice] = useState<string>("100");
@@ -197,7 +197,7 @@ export const AuctionApp = () => {
     } finally {
       setBidBusy(false);
     }
-  }, [auctionSigner, instance, quoteToken, ethersSigner, bidAuctionId, bidPrice, bidQty, bidCap, refreshAuctions]);
+  }, [auctionSigner, instance, quoteToken, ethersSigner, bidAuctionId, bidPrice, bidQty, bidCap, refreshAuctions, addLog]);
 
   const [settleId, setSettleId] = useState<string>("1");
   const [settleBusy, setSettleBusy] = useState<boolean>(false);
@@ -222,7 +222,7 @@ export const AuctionApp = () => {
     } finally {
       setSettleBusy(false);
     }
-  }, [auctionSigner, settleId, refreshAuctions]);
+  }, [auctionSigner, settleId, refreshAuctions, addLog]);
 
   const [balances, setBalances] = useState<{ base?: bigint; quote?: bigint }>({});
   const refreshBalances = useCallback(async () => {

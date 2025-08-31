@@ -4,6 +4,6 @@
   Command: 'npm run genabi'
 */
 export const QuoteTokenAddresses = { 
-  "11155111": { address: "0x9d1551f27EDC15aac8a9322545E7e4D4433aeF6d", chainId: 11155111, chainName: "sepolia" },
-  "31337": { address: "0xeAd6331F7f958D4ca6CA3e025AD8304731859c4f", chainId: 31337, chainName: "hardhat" },
+  "11155111": { address: "0x87596742396da0bECf5958a5aC8AcE2061380D5C", chainId: 11155111, chainName: "sepolia" },
+  "31337": { address: "0x5a38215f99B1500611B0db3AB0e857cD07E694f2", chainId: 31337, chainName: "hardhat" },
 };

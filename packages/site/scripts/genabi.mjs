@@ -2,7 +2,14 @@ import { execSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 
-const CONTRACT_NAMES = ["FHEVWAPAuction", "BaseToken", "QuoteToken"];
+const CONTRACT_NAMES = [
+  "FHEVWAPAuction",
+  "BaseToken",
+  "QuoteToken",
+  "MedicineAuction",
+  "MedicineToken",
+  "StableUSD",
+];
 
 // <root>/packages/fhevm-hardhat-template
 const rel = "../fhevm-hardhat-template";

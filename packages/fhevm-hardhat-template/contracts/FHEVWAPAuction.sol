@@ -58,7 +58,7 @@ contract FHEVWAPAuction is SepoliaConfig, ReentrancyGuard {
         uint256 S,
         uint64 start,
         uint64 end
-    ) external nonReentrant returns (uint256 auctionId) {
+    ) public nonReentrant returns (uint256 auctionId) {
         require(start < end, "invalid window");
         require(S > 0, "zero S");
         require(address(baseToken) != address(quoteToken), "same token");
@@ -98,7 +98,7 @@ contract FHEVWAPAuction is SepoliaConfig, ReentrancyGuard {
         uint256 qty,
         uint256 priceCap,
         uint256 maxSpend
-    ) external nonReentrant {
+    ) public nonReentrant {
         Auction storage a = auctions[auctionId];
         require(a.seller != address(0), "no auction");
         require(block.timestamp >= a.start && block.timestamp <= a.end, "not in window");
@@ -170,7 +170,7 @@ contract FHEVWAPAuction is SepoliaConfig, ReentrancyGuard {
     }
 
     /// @notice Oracle callback invoked with clear VWAP. Validates signatures and persists VWAP on-chain.
-    function resolveVWAPCallback(uint256 requestId, uint64 clearVWAP, bytes[] memory signatures) public {
+    function resolveVWAPCallback(uint256 requestId, uint64 clearVWAP, bytes[] memory signatures) public virtual {
         uint256 auctionId = _decryptReqToAuction[requestId];
         require(auctionId != 0, "unknown requestId");
         FHE.checkSignatures(requestId, signatures);
